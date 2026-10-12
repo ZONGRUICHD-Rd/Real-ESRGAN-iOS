@@ -33,6 +33,13 @@ jobs:
           path: build/mlpackages
           key: mlpackages-${{ hashFiles('tools/convert_models.py', 'tools/requirements.txt') }}
 
+      - name: Cache PyTorch weights
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: weights
+          key: weights-v1
+
       - uses: actions/setup-python@v5
         if: steps.cache.outputs.cache-hit != 'true'
         with:

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import time
 import urllib.request
 
 import coremltools as ct
@@ -165,10 +166,20 @@ def build_specs():
 
 def fetch(name, weights_dir):
     path = os.path.join(weights_dir, f'{name}.pth')
-    if not os.path.isfile(path):
-        os.makedirs(weights_dir, exist_ok=True)
-        print(f'Downloading {WEIGHT_URLS[name]}')
-        urllib.request.urlretrieve(WEIGHT_URLS[name], path)
+    if os.path.isfile(path):
+        return path
+    os.makedirs(weights_dir, exist_ok=True)
+    for attempt in range(1, 6):
+        try:
+            print(f'Downloading {WEIGHT_URLS[name]} (attempt {attempt})')
+            urllib.request.urlretrieve(WEIGHT_URLS[name], path + '.part')
+            os.replace(path + '.part', path)
+            return path
+        except OSError as error:  # urllib errors are OSError subclasses
+            print(f'  failed: {error}')
+            if attempt == 5:
+                raise
+            time.sleep(2**attempt)
     return path
 
 
