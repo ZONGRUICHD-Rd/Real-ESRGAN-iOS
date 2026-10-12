@@ -107,7 +107,8 @@ actor Upscaler {
         if Self.hasAlpha(image) {
             var buffer = vImage_Buffer(
                 data: src, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: srcRowBytes)
-            vImageUnpremultiplyData_BGRA8888(&buffer, &buffer, vImage_Flags(kvImageNoFlags))
+            // Alpha is the last byte in BGRA too, so the RGBA variant applies.
+            vImageUnpremultiplyData_RGBA8888(&buffer, &buffer, vImage_Flags(kvImageNoFlags))
             let plane = UnsafeMutablePointer<UInt8>.allocate(capacity: width * height)
             var minAlpha: UInt8 = 255
             for y in 0..<height {
