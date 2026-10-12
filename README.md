@@ -13,7 +13,7 @@
 | --- | --- |
 | `-n` 模型选择 | RealESRGAN_x4plus、RealESRGAN_x4plus_anime_6B、realesr-general-x4v3、RealESRGAN_x2plus |
 | `-dn` 降噪强度（DNI） | realesr-general-x4v3 提供 0 / 0.25 / 0.5 / 0.75 / 1 五档（转换时预先插值好权重） |
-| `-s/--outscale` | 1× / 2× / 3× / 4×，在拼接分块时直接按目标尺寸重采样 |
+| `-s/--outscale` | 1× / 2×（默认）/ 3× / 4×，在拼接分块时直接按目标尺寸重采样 |
 | `-t/--tile`、`--tile_pad` | 固定 256×256 分块，每边留 16 像素上下文 |
 | Alpha 通道 | 保留，Alpha 单独用高质量插值放大（相当于 `--alpha_upsampler bicubic`） |
 | `--face_enhance`（GFPGAN） | 未移植 |
@@ -21,14 +21,15 @@
 
 输出最大约 1.2 亿像素。超出时 App 会自动降低倍率，并在状态栏用橙色标出。
 
-## 界面（Liquid Glass）
+## 界面
 
-按照 HIG 的建议，Liquid Glass 只用在浮在内容上方的功能层，图片本身作为内容层：
+参照 Apple 自带 App 的排版，用系统组件搭建，iOS 26 的 Liquid Glass 效果由系统自动套用：
 
-- 系统导航栏和工具栏会自动套用 Liquid Glass；工具栏按钮分组，中间用 `ToolbarSpacer` 隔开
-- 底部的模型、倍率和「超分」按钮放在同一个 `GlassEffectContainer` 里。处理开始后，「超分」按钮（`.glassProminent`）会借助 `glassEffectID` 变形为进度胶囊
-- 对比滑块的把手和标签悬浮在照片上，所以使用 `.clear` 变体，并按 HIG 加了暗色衬底
-- 设置页是系统 sheet，自带玻璃材质
+- 主界面是分组列表 `Form`：最上面是图片卡片，下面依次是进度/结果、选项（模型、降噪、放大倍率、存储格式）、处理器和关于
+- 主操作按钮（选择照片 / 开始超分 / 取消 / 存储到“照片”）通过 `safeAreaBar` 固定在底部，使用 `.glassProminent` 样式
+- 超分完成后轻点图片，进入全屏对比：拖动分割线比较原图和结果，双指缩放
+- 处理器可选：自动、CPU、GPU、神经网络引擎（NPU），列表底部会显示本机实际可用的计算设备
+- 模型会在启动时和更改设置后提前在后台加载，界面上会显示加载状态和耗时，所以点「开始超分」后马上就能开始
 
 ## 目录
 
@@ -36,7 +37,7 @@
 RealESRGAN/            SwiftUI App
   App/                 入口、视图模型
   Engine/              Core ML 分块推理（Upscaler）、图片编解码、模型列表
-  Views/               主界面、对比视图、底部控制条、设置
+  Views/               主界面（Form）、全屏对比查看器
 tools/convert_models.py   PyTorch → Core ML 转换（自带网络结构，不依赖 basicsr）
 tools/build_models.sh     转换并编译成 .mlmodelc
 project.yml               XcodeGen 工程描述
