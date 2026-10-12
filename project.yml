@@ -32,6 +32,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: RealESRGAN/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: 超分
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 用于将超分后的图片保存到你的相册。

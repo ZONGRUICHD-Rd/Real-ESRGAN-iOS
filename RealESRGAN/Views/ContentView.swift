@@ -263,8 +263,7 @@ private struct StatusSection: View {
     }
 
     static func format(_ seconds: TimeInterval) -> String {
-        Duration.seconds(max(1, seconds.rounded()))
-            .formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow))
+        UpscaleViewModel.format(seconds)
     }
 }
 

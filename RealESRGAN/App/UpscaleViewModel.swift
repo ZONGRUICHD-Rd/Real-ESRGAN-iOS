@@ -41,6 +41,7 @@ final class UpscaleViewModel {
     private var task: Task<Void, Never>?
     private var prepareTask: Task<Void, Never>?
     private var tilesStartedAt: Date?
+    private var session: ProcessingSession?
 
     var errorMessage: String?
     var toast: String?
@@ -202,10 +203,16 @@ final class UpscaleViewModel {
         let baseName = "\(sourceName)_\(model.rawValue)_x\(outscale.formatted(.number.precision(.fractionLength(0...2))))"
         let began = Date()
 
+        let session = ProcessingSession(
+            title: "正在超分 · \(model.title)",
+            subtitle: "正在准备模型…",
+            onExpire: { [self] in Task { @MainActor in self.cancel() } })
+        self.session = session
+
         task = Task {
             let application = UIApplication.shared
-            let backgroundTask = application.beginBackgroundTask(withName: "upscale")
             application.isIdleTimerDisabled = true
+            var succeeded = false
             let (updates, continuation) = AsyncStream.makeStream(
                 of: UpscaleProgress.self, bufferingPolicy: .bufferingNewest(1))
             let progressTask = Task {
@@ -215,7 +222,8 @@ final class UpscaleViewModel {
                 continuation.finish()
                 progressTask.cancel()
                 application.isIdleTimerDisabled = false
-                application.endBackgroundTask(backgroundTask)
+                session.finish(success: succeeded)
+                if self.session === session { self.session = nil }
             }
 
             do {
@@ -225,6 +233,7 @@ final class UpscaleViewModel {
                 try Task.checkCancellation()
                 modelState = .ready(loadTime: nil)
                 phase = .encoding
+                session.update(title: "正在超分 · \(options.model.title)", subtitle: "正在生成图片…", completed: 1, total: 1)
 
                 let rendered = try await Task.detached(priority: .userInitiated) {
                     let preview = ImageCodec.downsample(output.image, maxPixel: 4096)
@@ -245,6 +254,7 @@ final class UpscaleViewModel {
                 elapsed = Date().timeIntervalSince(began)
                 completedCount += 1
                 phase = .done
+                succeeded = true
             } catch {
                 // `cancel()` has already reset the phase for cancelled runs.
                 guard !Task.isCancelled, !(error is CancellationError) else { return }
@@ -275,7 +285,17 @@ final class UpscaleViewModel {
                 remaining = perTile * Double(total - completed)
             }
             phase = .processing(completed: completed, total: total)
+            var subtitle = "分块 \(completed)/\(total)"
+            if let remaining {
+                subtitle += " · 剩余约 \(Self.format(remaining))"
+            }
+            session?.update(title: "正在超分 · \(model.title)", subtitle: subtitle, completed: completed, total: total)
         }
+    }
+
+    static func format(_ seconds: TimeInterval) -> String {
+        Duration.seconds(max(1, seconds.rounded()))
+            .formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow))
     }
 
     private func clearResult() {

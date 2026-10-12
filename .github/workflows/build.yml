@@ -121,6 +121,7 @@ jobs:
           APP=build/DerivedData/Build/Products/Release-iphoneos/RealESRGAN.app
           test -d "$APP"
           ls "$APP/Models"
+          plutil -p "$APP/Info.plist" | grep -A3 BGTaskSchedulerPermittedIdentifiers
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
           (cd build/ipa && zip -qry ../RealESRGAN-unsigned.ipa Payload)

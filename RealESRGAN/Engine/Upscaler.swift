@@ -72,7 +72,9 @@ actor Upscaler {
         progress: @escaping @Sendable (UpscaleProgress) -> Void
     ) async throws -> UpscaleOutput {
         progress(.loadingModel)
-        let mlModel = try await model(named: options.model.resourceName(denoise: options.denoise), units: options.computeUnits)
+        let modelName = options.model.resourceName(denoise: options.denoise)
+        var units = options.computeUnits
+        var mlModel = try await model(named: modelName, units: units)
         try Task.checkCancellation()
 
         guard let constraint = mlModel.modelDescription.inputDescriptionsByName["input"]?.imageConstraint else {
@@ -202,7 +204,20 @@ actor Upscaler {
 
                 let features = try MLDictionaryFeatureProvider(
                     dictionary: ["input": MLFeatureValue(pixelBuffer: inputBuffer)])
-                let prediction = try await mlModel.prediction(from: features)
+                // iOS does not let a backgrounded app submit GPU work, so move the remaining tiles
+                // to the Neural Engine once the app leaves the screen.
+                if Self.usesGPU(units), AppActivity.shared.isInBackground {
+                    units = .cpuAndNeuralEngine
+                    mlModel = try await model(named: modelName, units: units)
+                }
+                let prediction: MLFeatureProvider
+                do {
+                    prediction = try await mlModel.prediction(from: features)
+                } catch where Self.usesGPU(units) && !Task.isCancelled {
+                    units = .cpuAndNeuralEngine
+                    mlModel = try await model(named: modelName, units: units)
+                    prediction = try await mlModel.prediction(from: features)
+                }
                 guard let outputBuffer = prediction.featureValue(for: "output")?.imageBufferValue,
                       let tileImage = Self.makeImage(from: outputBuffer, colorSpace: colorSpace)
                 else { throw UpscaleError.unexpectedOutput }
@@ -307,6 +322,10 @@ actor Upscaler {
             if pending?.key == key { pending = nil }
             throw error
         }
+    }
+
+    private static func usesGPU(_ units: MLComputeUnits) -> Bool {
+        units == .all || units == .cpuAndGPU
     }
 
     private static func hasAlpha(_ image: CGImage) -> Bool {
