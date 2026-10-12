@@ -80,7 +80,7 @@ struct CompareView: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
-                .glassEffect(.clear.interactive(), in: .circle)
+                .glassEffect(.regular.interactive(), in: .circle)
         }
         .position(x: x, y: height / 2)
         .accessibilityElement()
@@ -97,12 +97,12 @@ struct CompareView: View {
 
     private var labels: some View {
         VStack {
+            Spacer()
             HStack {
                 tag("原图")
                 Spacer()
-                tag("Real-ESRGAN")
+                tag("超分")
             }
-            Spacer()
         }
         .padding(12)
         .allowsHitTesting(false)
@@ -114,15 +114,14 @@ struct CompareView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(.black.opacity(0.35), in: .capsule)
-            .glassEffect(.clear, in: .capsule)
+            .glassEffect(.regular, in: .capsule)
     }
 
     // MARK: Gestures
 
     /// At 1x a drag moves the divider; when zoomed it pans the image.
     private func panGesture(container: CGSize, fitted: CGSize, imageMinX: CGFloat, displayedWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+        DragGesture(minimumDistance: 2)
             .onChanged { value in
                 if zoom > 1.01 || after == nil {
                     offset = clampedOffset(

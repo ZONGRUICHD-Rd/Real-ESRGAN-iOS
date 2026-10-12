@@ -16,19 +16,31 @@ final class UpscaleViewModel {
         case done
     }
 
+    enum ModelState: Equatable {
+        case idle
+        case preparing
+        case ready(loadTime: TimeInterval?)
+        case failed(String)
+    }
+
     // MARK: Image state
 
     private(set) var phase: Phase = .empty
+    private(set) var modelState: ModelState = .idle
     private(set) var source: CGImage?
     private(set) var sourcePreview: UIImage?
     private(set) var resultPreview: UIImage?
     private(set) var resultFileURL: URL?
     private(set) var resultSize: CGSize?
+    private(set) var resultByteCount: Int?
     private(set) var elapsed: TimeInterval?
+    private(set) var remaining: TimeInterval?
     private(set) var completedCount = 0
     private var resultData: Data?
     private var sourceName = "image"
     private var task: Task<Void, Never>?
+    private var prepareTask: Task<Void, Never>?
+    private var tilesStartedAt: Date?
 
     var errorMessage: String?
     var toast: String?
@@ -36,30 +48,25 @@ final class UpscaleViewModel {
     // MARK: Settings (persisted)
 
     var model: SRModelKind {
-        didSet { defaults.set(model.rawValue, forKey: "model"); invalidateResult() }
+        didSet { settingChanged(model.rawValue, "model", reloadsModel: true) }
     }
     var outscale: Double {
-        didSet { defaults.set(outscale, forKey: "outscale"); invalidateResult() }
+        didSet { settingChanged(outscale, "outscale", reloadsModel: false) }
     }
     var denoise: Double {
-        didSet { defaults.set(denoise, forKey: "denoise"); invalidateResult() }
+        didSet { settingChanged(denoise, "denoise", reloadsModel: true) }
     }
     var outputFormat: OutputFormat {
-        didSet { defaults.set(outputFormat.rawValue, forKey: "format") }
+        didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: "format") }
     }
     var compute: ComputeChoice {
-        didSet {
-            defaults.set(compute.rawValue, forKey: "compute")
-            Task { await Upscaler.shared.unload() }
-        }
+        didSet { settingChanged(compute.rawValue, "compute", reloadsModel: true) }
     }
-
-    @ObservationIgnored private let defaults = UserDefaults.standard
 
     init() {
         let defaults = UserDefaults.standard
         model = SRModelKind(rawValue: defaults.string(forKey: "model") ?? "") ?? .x4plus
-        outscale = defaults.object(forKey: "outscale") as? Double ?? 4
+        outscale = defaults.object(forKey: "outscale") as? Double ?? 2
         denoise = defaults.object(forKey: "denoise") as? Double ?? 0.5
         outputFormat = OutputFormat(rawValue: defaults.string(forKey: "format") ?? "") ?? .png
         compute = ComputeChoice(rawValue: defaults.string(forKey: "compute") ?? "") ?? .all
@@ -89,23 +96,21 @@ final class UpscaleViewModel {
         return "\(source.width) × \(source.height)"
     }
 
+    var effectiveOutscale: Double? {
+        guard let source else { return nil }
+        return Upscaler.effectiveOutscale(width: source.width, height: source.height, requested: outscale)
+    }
+
     var targetSizeText: String? {
         if let resultSize { return "\(Int(resultSize.width)) × \(Int(resultSize.height))" }
-        guard let source else { return nil }
-        let scale = Upscaler.effectiveOutscale(width: source.width, height: source.height, requested: outscale)
-        guard scale >= 1 else { return nil }
+        guard let source, let scale = effectiveOutscale, scale >= 1 else { return nil }
         return "\(Int((Double(source.width) * scale).rounded())) × \(Int((Double(source.height) * scale).rounded()))"
     }
 
     /// True when the requested scale had to be reduced to stay within the memory budget.
     var isScaleCapped: Bool {
-        guard let source else { return false }
-        return Upscaler.effectiveOutscale(width: source.width, height: source.height, requested: outscale) < outscale
-    }
-
-    var elapsedText: String? {
-        guard let elapsed, phase == .done else { return nil }
-        return elapsed.formatted(.number.precision(.fractionLength(1))) + " 秒"
+        guard let scale = effectiveOutscale else { return false }
+        return scale < outscale
     }
 
     // MARK: Loading
@@ -140,6 +145,7 @@ final class UpscaleViewModel {
         sourcePreview = UIImage(cgImage: ImageCodec.downsample(image, maxPixel: 2048))
         clearResult()
         phase = .ready
+        prepareModel()
     }
 
     func clear() {
@@ -150,12 +156,45 @@ final class UpscaleViewModel {
         phase = .empty
     }
 
+    // MARK: Model preparation
+
+    /// Loads the selected model in the background so tapping 「开始」 starts immediately.
+    func prepareModel() {
+        prepareTask?.cancel()
+        let kind = model, denoise = denoise, units = compute.units
+        modelState = .preparing
+        prepareTask = Task {
+            // Debounce quick successive changes (e.g. dragging the denoise slider).
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            let began = Date()
+            do {
+                let wasCached = try await Upscaler.shared.prepare(kind, denoise: denoise, units: units)
+                guard !Task.isCancelled else { return }
+                modelState = .ready(loadTime: wasCached ? nil : Date().timeIntervalSince(began))
+            } catch {
+                guard !Task.isCancelled else { return }
+                modelState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func settingChanged(_ value: Any, _ key: String, reloadsModel: Bool) {
+        UserDefaults.standard.set(value, forKey: key)
+        if phase == .done {
+            clearResult()
+            phase = .ready
+        }
+        if reloadsModel { prepareModel() }
+    }
+
     // MARK: Processing
 
     func start() {
         guard let source, !isBusy else { return }
         clearResult()
         phase = .loadingModel
+        tilesStartedAt = nil
 
         let options = UpscaleOptions(
             model: model, denoise: denoise, outscale: outscale, computeUnits: compute.units)
@@ -184,6 +223,7 @@ final class UpscaleViewModel {
                     continuation.yield(update)
                 }
                 try Task.checkCancellation()
+                modelState = .ready(loadTime: nil)
                 phase = .encoding
 
                 let rendered = try await Task.detached(priority: .userInitiated) {
@@ -199,6 +239,7 @@ final class UpscaleViewModel {
 
                 resultPreview = rendered.preview
                 resultData = rendered.data
+                resultByteCount = rendered.data.count
                 resultFileURL = rendered.url
                 resultSize = CGSize(width: output.image.width, height: output.image.height)
                 elapsed = Date().timeIntervalSince(began)
@@ -216,6 +257,7 @@ final class UpscaleViewModel {
     func cancel() {
         task?.cancel()
         task = nil
+        remaining = nil
         if isBusy { phase = .ready }
     }
 
@@ -225,23 +267,26 @@ final class UpscaleViewModel {
         case .loadingModel:
             phase = .loadingModel
         case .tiles(let completed, let total):
+            if completed == 0 {
+                tilesStartedAt = Date()
+                remaining = nil
+            } else if let tilesStartedAt {
+                let perTile = Date().timeIntervalSince(tilesStartedAt) / Double(completed)
+                remaining = perTile * Double(total - completed)
+            }
             phase = .processing(completed: completed, total: total)
         }
-    }
-
-    private func invalidateResult() {
-        guard phase == .done else { return }
-        clearResult()
-        phase = .ready
     }
 
     private func clearResult() {
         if let resultFileURL { try? FileManager.default.removeItem(at: resultFileURL) }
         resultPreview = nil
         resultData = nil
+        resultByteCount = nil
         resultFileURL = nil
         resultSize = nil
         elapsed = nil
+        remaining = nil
     }
 
     // MARK: Export
@@ -257,7 +302,7 @@ final class UpscaleViewModel {
             try await PHPhotoLibrary.shared().performChanges {
                 PHAssetCreationRequest.forAsset().addResource(with: .photo, data: resultData, options: nil)
             }
-            showToast("已保存到相册")
+            showToast("已存储到“照片”")
         } catch {
             errorMessage = error.localizedDescription
         }

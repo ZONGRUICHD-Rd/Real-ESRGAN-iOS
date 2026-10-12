@@ -43,6 +43,10 @@ enum UpscaleError: LocalizedError {
     }
 }
 
+private struct ModelBox: @unchecked Sendable {
+    let model: MLModel
+}
+
 /// Runs a Real-ESRGAN Core ML model over an image tile by tile, mirroring
 /// `RealESRGANer.tile_process` from the Python implementation.
 actor Upscaler {
@@ -53,6 +57,8 @@ actor Upscaler {
 
     private var loadedKey: String?
     private var loadedModel: MLModel?
+    /// In-flight load, shared by `prepare` and `upscale` so a model is never compiled twice.
+    private var pending: (key: String, task: Task<ModelBox, Error>)?
 
     /// The output scale actually used for an input, capped by `maxOutputPixels`.
     static func effectiveOutscale(width: Int, height: Int, requested: Double) -> Double {
@@ -251,25 +257,56 @@ actor Upscaler {
         return UpscaleOutput(image: result, outscale: outscale, tileCount: total)
     }
 
+    /// Loads (and, on first use, compiles for the chosen processor) a model ahead of time.
+    /// Returns `true` when the model was already in memory.
+    @discardableResult
+    func prepare(_ kind: SRModelKind, denoise: Double, units: MLComputeUnits) async throws -> Bool {
+        let name = kind.resourceName(denoise: denoise)
+        let cached = Self.key(name, units) == loadedKey
+        _ = try await model(named: name, units: units)
+        return cached
+    }
+
     /// Releases the cached model (e.g. on memory warnings).
     func unload() {
+        pending?.task.cancel()
+        pending = nil
         loadedModel = nil
         loadedKey = nil
     }
 
+    private static func key(_ name: String, _ units: MLComputeUnits) -> String { "\(name)|\(units.rawValue)" }
+
     private func model(named name: String, units: MLComputeUnits) async throws -> MLModel {
-        let key = "\(name)|\(units.rawValue)"
+        let key = Self.key(name, units)
         if key == loadedKey, let loadedModel { return loadedModel }
-        unload()
+        if let pending, pending.key == key { return try await pending.task.value.model }
+
         guard let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc", subdirectory: "Models") else {
             throw UpscaleError.modelMissing(name)
         }
-        let configuration = MLModelConfiguration()
-        configuration.computeUnits = units
-        let model = try await MLModel.load(contentsOf: url, configuration: configuration)
-        loadedModel = model
-        loadedKey = key
-        return model
+        // Drop the previous model first so two large networks are never resident at once.
+        loadedModel = nil
+        loadedKey = nil
+        let task = Task<ModelBox, Error> {
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = units
+            configuration.allowLowPrecisionAccumulationOnGPU = true
+            return ModelBox(model: try await MLModel.load(contentsOf: url, configuration: configuration))
+        }
+        pending = (key, task)
+        do {
+            let model = try await task.value.model
+            if pending?.key == key {
+                pending = nil
+                loadedModel = model
+                loadedKey = key
+            }
+            return model
+        } catch {
+            if pending?.key == key { pending = nil }
+            throw error
+        }
     }
 
     private static func hasAlpha(_ image: CGImage) -> Bool {

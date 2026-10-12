@@ -1,4 +1,5 @@
 import CoreML
+import Metal
 import UniformTypeIdentifiers
 
 /// Real-ESRGAN networks bundled with the app (converted by `tools/convert_models.py`).
@@ -94,9 +95,27 @@ enum ComputeChoice: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all: "自动"
-        case .neuralEngine: "神经网络引擎"
+        case .neuralEngine: "神经网络引擎（NPU）"
         case .gpu: "GPU"
-        case .cpu: "仅 CPU"
+        case .cpu: "CPU"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .all: "由 Core ML 在 CPU、GPU 和 NPU 之间自动分配"
+        case .neuralEngine: "速度快、功耗低；首次使用需要编译模型"
+        case .gpu: "加载最快，适合偶尔处理几张图片"
+        case .cpu: "最慢，但兼容性最好"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .all: "wand.and.sparkles"
+        case .neuralEngine: "brain"
+        case .gpu: "square.stack.3d.up"
+        case .cpu: "cpu"
         }
     }
 
@@ -107,5 +126,18 @@ enum ComputeChoice: String, CaseIterable, Identifiable {
         case .gpu: .cpuAndGPU
         case .cpu: .cpuOnly
         }
+    }
+
+    /// Human-readable list of the compute devices Core ML can use on this device.
+    static var availableDevicesDescription: String {
+        MLComputeDevice.allComputeDevices.map { device -> String in
+            switch device {
+            case .cpu: return "CPU"
+            case .gpu(let gpu): return "GPU（\(gpu.metalDevice.name)）"
+            case .neuralEngine(let engine): return "神经网络引擎（\(engine.totalCoreCount) 核）"
+            @unknown default: return device.description
+            }
+        }
+        .joined(separator: "、")
     }
 }

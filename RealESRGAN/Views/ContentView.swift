@@ -1,27 +1,39 @@
 import PhotosUI
 import SwiftUI
 
+/// Main screen, laid out like Apple's own utility apps: a grouped form with the image on top,
+/// option rows below and a single primary action pinned to the bottom edge.
 struct ContentView: View {
     @State private var viewModel = UpscaleViewModel()
     @State private var pickerItem: PhotosPickerItem?
-    @State private var showsSettings = false
     @State private var showsFileImporter = false
+    @State private var showsViewer = false
 
     var body: some View {
         NavigationStack {
-            canvas
-                .navigationTitle("Real-ESRGAN")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent }
-                .safeAreaInset(edge: .bottom) {
-                    ControlBar(viewModel: viewModel, pickerItem: $pickerItem)
+            Form {
+                ImageSection(
+                    viewModel: viewModel, pickerItem: $pickerItem,
+                    openFiles: { showsFileImporter = true },
+                    openViewer: { showsViewer = true })
+
+                if viewModel.isBusy || viewModel.hasResult {
+                    StatusSection(viewModel: viewModel)
                 }
-                .overlay(alignment: .top) { toastView }
-                .animation(.spring(duration: 0.35), value: viewModel.toast)
+
+                OptionsSections(viewModel: viewModel)
+            }
+            .navigationTitle("超分辨率")
+            .toolbar { toolbarContent }
+            .safeAreaBar(edge: .bottom) {
+                BottomBar(viewModel: viewModel, pickerItem: $pickerItem, openViewer: { showsViewer = true })
+            }
+            .overlay(alignment: .top) { toastView }
+            .animation(.default, value: viewModel.phase)
+            .animation(.spring(duration: 0.35), value: viewModel.toast)
         }
-        .sheet(isPresented: $showsSettings) {
-            SettingsView(viewModel: viewModel)
-                .presentationDetents([.medium, .large])
+        .fullScreenCover(isPresented: $showsViewer) {
+            ResultViewer(viewModel: viewModel)
         }
         .fileImporter(isPresented: $showsFileImporter, allowedContentTypes: [.image]) { result in
             switch result {
@@ -38,8 +50,9 @@ struct ContentView: View {
                 pickerItem = nil
             }
         }
+        .task { viewModel.prepareModel() }
         .alert(
-            "出错了",
+            "无法完成操作",
             isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: { if !$0 { viewModel.errorMessage = nil } })
@@ -51,54 +64,22 @@ struct ContentView: View {
         .sensoryFeedback(.success, trigger: viewModel.completedCount)
     }
 
-    // MARK: Canvas (content layer)
-
-    @ViewBuilder
-    private var canvas: some View {
-        if let before = viewModel.sourcePreview {
-            CompareView(before: before, after: viewModel.resultPreview)
-                .background(Color.black)
-        } else {
-            EmptyStateView { showsFileImporter = true }
-        }
-    }
-
-    // MARK: Toolbar (Liquid Glass functional layer)
-
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarLeading) {
+        ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                    Label("从相册选择", systemImage: "photo.on.rectangle")
+                    Label("从“照片”中选取", systemImage: "photo.on.rectangle")
                 }
-                Button("从文件选择", systemImage: "folder") { showsFileImporter = true }
+                Button("从“文件”中选取", systemImage: "folder") { showsFileImporter = true }
                 if viewModel.hasSource {
                     Divider()
-                    Button("移除图片", systemImage: "xmark.circle", role: .destructive) { viewModel.clear() }
+                    Button("移除图片", systemImage: "trash", role: .destructive) { viewModel.clear() }
                 }
             } label: {
-                Label("打开", systemImage: "plus")
+                Label("添加图片", systemImage: "plus")
             }
             .disabled(viewModel.isBusy)
-        }
-
-        if viewModel.hasResult {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if let url = viewModel.resultFileURL {
-                    ShareLink(item: url) {
-                        Label("分享", systemImage: "square.and.arrow.up")
-                    }
-                }
-                Button("保存到相册", systemImage: "square.and.arrow.down") {
-                    Task { await viewModel.saveToPhotos() }
-                }
-            }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        }
-
-        ToolbarItem(placement: .topBarTrailing) {
-            Button("设置", systemImage: "slider.horizontal.3") { showsSettings = true }
         }
     }
 
@@ -107,45 +88,396 @@ struct ContentView: View {
         if let toast = viewModel.toast {
             Label(toast, systemImage: "checkmark.circle.fill")
                 .font(.subheadline.weight(.semibold))
+                .symbolRenderingMode(.multicolor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .glassEffect(.regular.tint(.green.opacity(0.35)), in: .capsule)
-                .padding(.top, 8)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.top, 4)
                 .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 }
 
-private struct EmptyStateView: View {
+// MARK: - Image
+
+private struct ImageSection: View {
+    let viewModel: UpscaleViewModel
+    @Binding var pickerItem: PhotosPickerItem?
     var openFiles: () -> Void
+    var openViewer: () -> Void
+
+    @State private var showsOriginal = false
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color.indigo.opacity(0.55), Color.teal.opacity(0.45)],
-                startPoint: .topLeading, endPoint: .bottomTrailing)
-                .ignoresSafeArea()
-
-            VStack(spacing: 20) {
-                Image(systemName: "wand.and.sparkles")
-                    .font(.system(size: 56, weight: .light))
-                    .foregroundStyle(.white)
-                    .frame(width: 112, height: 112)
-                    .glassEffect(.clear, in: .circle)
-
-                VStack(spacing: 8) {
-                    Text("图片超分辨率")
-                        .font(.largeTitle.bold())
-                    Text("基于 Real-ESRGAN，在设备端用神经网络引擎\n将图片放大 2–4 倍并修复模糊与噪点。")
-                        .font(.callout)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
+        if let source = viewModel.sourcePreview {
+            Section {
+                Group {
+                    if viewModel.hasResult {
+                        Button(action: openViewer) { preview(source) }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("全屏查看对比")
+                    } else {
+                        preview(source)
+                    }
                 }
+                .listRowInsets(EdgeInsets())
 
-                Button("从文件选择", systemImage: "folder", action: openFiles)
-                    .buttonStyle(.glass)
+                if viewModel.hasResult {
+                    Picker("显示", selection: $showsOriginal) {
+                        Text("超分结果").tag(false)
+                        Text("原图").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                }
+            } footer: {
+                sizeFooter
             }
-            .padding(32)
+            .onChange(of: viewModel.hasResult) { _, _ in showsOriginal = false }
+        } else {
+            Section {
+                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.tint)
+                        Text("选择照片")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text("在本机用 Real-ESRGAN 放大图片，并修复模糊和噪点")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 28)
+                }
+                .buttonStyle(.plain)
+
+                Button("从“文件”中选取", systemImage: "folder", action: openFiles)
+            }
         }
+    }
+
+    private func preview(_ source: UIImage) -> some View {
+        let image = (!showsOriginal ? viewModel.resultPreview : nil) ?? source
+        return Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: 360)
+            .background(Color(.secondarySystemGroupedBackground))
+            .overlay(alignment: .bottomLeading) { badge }
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if viewModel.hasResult {
+            Label(showsOriginal ? "原图" : "轻点以对比", systemImage: showsOriginal ? "photo" : "rectangle.split.2x1")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .glassEffect(.regular, in: .capsule)
+                .padding(10)
+        }
+    }
+
+    @ViewBuilder
+    private var sizeFooter: some View {
+        if let source = viewModel.sourceSizeText {
+            VStack(alignment: .leading, spacing: 4) {
+                if let target = viewModel.targetSizeText {
+                    Text("\(source) 像素 → \(target) 像素")
+                } else {
+                    Text("\(source) 像素")
+                }
+                if viewModel.isScaleCapped, let scale = viewModel.effectiveOutscale, !viewModel.hasResult {
+                    Text("输出过大，已按内存上限自动调整为 \(scale.formatted(.number.precision(.fractionLength(2))))×。")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .monospacedDigit()
+        }
+    }
+}
+
+// MARK: - Status
+
+private struct StatusSection: View {
+    let viewModel: UpscaleViewModel
+
+    var body: some View {
+        Section {
+            switch viewModel.phase {
+            case .loadingModel:
+                HStack(spacing: 12) {
+                    ProgressView()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("正在准备模型…")
+                        Text("首次在该处理器上使用这个模型时需要编译，之后会快很多。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            case .processing(let completed, let total):
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("正在超分")
+                        Spacer()
+                        Text(viewModel.progress, format: .percent.precision(.fractionLength(0)))
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: viewModel.progress)
+                    HStack {
+                        Text("分块 \(completed)/\(total)")
+                        Spacer()
+                        if let remaining = viewModel.remaining {
+                            Text("剩余约 \(Self.format(remaining))")
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+                .monospacedDigit()
+                .padding(.vertical, 4)
+            case .encoding:
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("正在生成图片…")
+                }
+            default:
+                if let size = viewModel.targetSizeText {
+                    LabeledContent("输出尺寸", value: size)
+                }
+                if let elapsed = viewModel.elapsed {
+                    LabeledContent("用时", value: Self.format(elapsed))
+                }
+                if let bytes = viewModel.resultByteCount {
+                    LabeledContent("文件大小", value: Int64(bytes).formatted(.byteCount(style: .file)))
+                }
+            }
+        } header: {
+            Text(viewModel.isBusy ? "进度" : "结果")
+        }
+        .monospacedDigit()
+    }
+
+    static func format(_ seconds: TimeInterval) -> String {
+        Duration.seconds(max(1, seconds.rounded()))
+            .formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow))
+    }
+}
+
+// MARK: - Options
+
+private struct OptionsSections: View {
+    @Bindable var viewModel: UpscaleViewModel
+
+    var body: some View {
+        Section {
+            NavigationLink {
+                ModelList(selection: $viewModel.model)
+            } label: {
+                LabeledContent {
+                    Text(viewModel.model.title)
+                } label: {
+                    Label("模型", systemImage: "cube")
+                }
+            }
+
+            if viewModel.model.supportsDenoise {
+                VStack(alignment: .leading, spacing: 6) {
+                    LabeledContent {
+                        Text(viewModel.denoise.formatted(.number.precision(.fractionLength(2))))
+                            .monospacedDigit()
+                    } label: {
+                        Label("降噪强度", systemImage: "camera.filters")
+                    }
+                    Slider(value: $viewModel.denoise, in: 0...1, step: 0.25)
+                }
+            }
+
+            Picker(selection: $viewModel.outscale) {
+                ForEach([1.0, 2.0, 3.0, 4.0], id: \.self) { scale in
+                    Text("\(Int(scale))×").tag(scale)
+                }
+            } label: {
+                Label("放大倍率", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+
+            Picker(selection: $viewModel.outputFormat) {
+                ForEach(OutputFormat.allCases) { format in
+                    Text(format.title).tag(format)
+                }
+            } label: {
+                Label("存储格式", systemImage: "doc")
+            }
+        } header: {
+            Text("选项")
+        } footer: {
+            Text("模型原生放大 \(viewModel.model.netScale)×，其他倍率会在推理后重新采样。透明通道会被保留。")
+        }
+        .disabled(viewModel.isBusy)
+
+        Section {
+            Picker("处理器", selection: $viewModel.compute) {
+                ForEach(ComputeChoice.allCases) { choice in
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(choice.title)
+                            Text(choice.detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: choice.symbol)
+                    }
+                    .tag(choice)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+
+            LabeledContent("模型状态") {
+                modelStatus
+            }
+        } header: {
+            Text("处理器")
+        } footer: {
+            Text("本机可用：\(ComputeChoice.availableDevicesDescription)。iPhone 的 NPU 就是神经网络引擎。")
+        }
+        .disabled(viewModel.isBusy)
+
+        Section {
+            Link(destination: URL(string: "https://github.com/xinntao/Real-ESRGAN")!) {
+                Label("Real-ESRGAN", systemImage: "link")
+            }
+            Link(destination: URL(string: "https://github.com/Ikaros-521/Real-ESRGAN")!) {
+                Label("Ikaros-521/Real-ESRGAN", systemImage: "link")
+            }
+        } header: {
+            Text("关于")
+        } footer: {
+            Text("模型与算法来自 Real-ESRGAN（BSD-3-Clause），所有处理都在本机完成，不会上传图片。")
+        }
+    }
+
+    @ViewBuilder
+    private var modelStatus: some View {
+        switch viewModel.modelState {
+        case .idle:
+            Text("未加载")
+        case .preparing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("正在加载…")
+            }
+        case .ready(let loadTime):
+            if let loadTime {
+                Text("已就绪（\(loadTime.formatted(.number.precision(.fractionLength(1)))) 秒）")
+            } else {
+                Text("已就绪")
+            }
+        case .failed:
+            Text("加载失败").foregroundStyle(.red)
+        }
+    }
+}
+
+private struct ModelList: View {
+    @Binding var selection: SRModelKind
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(SRModelKind.allCases) { model in
+                    Button {
+                        selection = model
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: model.symbol)
+                                .font(.title3)
+                                .foregroundStyle(.tint)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(model.title)
+                                    .foregroundStyle(.primary)
+                                Text(model.subtitle)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if model == selection {
+                                Image(systemName: "checkmark")
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } footer: {
+                Text("照片建议用“通用照片”，插画和动漫截图用“动漫插画”，大图或追求速度用“通用轻量”。")
+            }
+        }
+        .navigationTitle("模型")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Bottom bar
+
+private struct BottomBar: View {
+    let viewModel: UpscaleViewModel
+    @Binding var pickerItem: PhotosPickerItem?
+    var openViewer: () -> Void
+
+    var body: some View {
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
+                if !viewModel.hasSource {
+                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                        Text("选择照片").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                } else if viewModel.isBusy {
+                    Button(role: .cancel) {
+                        viewModel.cancel()
+                    } label: {
+                        Text("取消").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                } else if viewModel.hasResult {
+                    if let url = viewModel.resultFileURL {
+                        ShareLink(item: url) {
+                            Image(systemName: "square.and.arrow.up")
+                                .frame(width: 24)
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("分享")
+                    }
+                    Button {
+                        Task { await viewModel.saveToPhotos() }
+                    } label: {
+                        Text("存储到“照片”").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                } else {
+                    Button {
+                        viewModel.start()
+                    } label: {
+                        Text("开始超分").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                }
+            }
+            .font(.headline)
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
     }
 }
