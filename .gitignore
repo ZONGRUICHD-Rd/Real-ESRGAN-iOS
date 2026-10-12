@@ -1,0 +1,8 @@
+.DS_Store
+build/
+weights/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+__pycache__/
+*.ipa

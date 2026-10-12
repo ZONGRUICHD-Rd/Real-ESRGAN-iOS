@@ -1,0 +1,4 @@
+# Model conversion only (not needed at app runtime).
+torch==2.7.0
+coremltools==9.0
+numpy
