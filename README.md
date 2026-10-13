@@ -30,7 +30,7 @@
 - 主操作按钮（选择照片 / 开始超分 / 取消 / 存储到“照片”）通过 `safeAreaBar` 固定在底部，使用 `.glassProminent` 样式
 - 超分完成后轻点图片，进入全屏对比：拖动分割线比较原图和结果，双指缩放
 - 处理器可选：自动、CPU、GPU、神经网络引擎（NPU），列表底部会显示本机实际可用的计算设备
-- 超分开始后，系统会通过 iOS 26 的 `BGContinuedProcessingTask` 在灵动岛和锁定屏幕上显示进度（实时活动），并提供取消按钮。切到后台后处理也会继续；因为后台不允许使用 GPU，剩余分块会自动改由神经网络引擎处理
+- 超分时，进度、剩余时间和百分比会以实时活动（Widget 扩展 `RealESRGANWidgets`）显示在灵动岛和锁定屏幕上。同时会申请 iOS 26 的 `BGContinuedProcessingTask`，让 App 切到后台后继续处理。如果系统批准了这个申请，会改用系统自带的进度实时活动（带取消按钮），以免同时出现两个。后台不允许使用 GPU，所以切到后台后，剩余分块会自动改由神经网络引擎处理
 - 模型会在启动时和更改设置后提前在后台加载，界面上会显示加载状态和耗时，所以点「开始超分」后马上就能开始
 
 ## 目录
@@ -40,6 +40,8 @@ RealESRGAN/            SwiftUI App
   App/                 入口、视图模型
   Engine/              Core ML 分块推理（Upscaler）、图片编解码、模型列表
   Views/               主界面（Form）、全屏对比查看器
+Shared/                   App 和 Widget 共用的实时活动数据定义
+Widgets/                  灵动岛 / 锁定屏幕实时活动（Widget 扩展）
 tools/convert_models.py   PyTorch → Core ML 转换（自带网络结构，不依赖 basicsr）
 tools/build_models.sh     转换并编译成 .mlmodelc
 project.yml               XcodeGen 工程描述

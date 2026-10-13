@@ -18,10 +18,13 @@ targets:
     platform: iOS
     sources:
       - path: RealESRGAN
+      - path: Shared
       # Compiled Core ML models (.mlmodelc), produced by tools/build_models.sh.
       - path: build/Models
         type: folder
         buildPhase: resources
+    dependencies:
+      - target: RealESRGANWidgets
     settings:
       base:
         PRODUCT_NAME: RealESRGAN
@@ -41,6 +44,28 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleDefault
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        DEVELOPMENT_TEAM: ""
+
+  # Live Activity (Dynamic Island / Lock Screen) for upscale progress.
+  RealESRGANWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_NAME: RealESRGANWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.zongruichd.realesrgan.widgets
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Widgets/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: 超分进度
+        SKIP_INSTALL: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: NO

@@ -1,3 +1,4 @@
+import ActivityKit
 import BackgroundTasks
 import Foundation
 import os
@@ -16,22 +17,79 @@ final class AppActivity: @unchecked Sendable {
     }
 }
 
-/// Runs an upscale inside a `BGContinuedProcessingTask` (iOS 26), so the work keeps going after the
-/// app is backgrounded and the system shows its progress as a Live Activity in the Dynamic Island
-/// and on the Lock Screen, with a cancel button. Falls back to a short background-task assertion
-/// when the system declines the request.
+/// Everything that keeps one upscale run visible and alive outside the app:
+/// - our own Live Activity (Dynamic Island + Lock Screen) with progress and a countdown;
+/// - an iOS 26 `BGContinuedProcessingTask`, so the work keeps running after the app is backgrounded.
+///   When the system accepts it, it shows its own progress Live Activity, so ours is ended to avoid
+///   showing two.
+/// - a short background-task assertion as a fallback when the system declines the request.
 @MainActor
 final class ProcessingSession {
-    private let box = TaskBox()
-    private var fallbackID: UIBackgroundTaskIdentifier = .invalid
+    typealias State = UpscaleActivityAttributes.ContentState
 
-    /// - Parameter onExpire: Called when the person cancels from the Live Activity or the system expires the task.
-    init(title: String, subtitle: String, onExpire: @escaping @Sendable () -> Void) {
-        let prefix = Bundle.main.bundleIdentifier ?? "com.zongruichd.realesrgan"
-        let identifier = "\(prefix).upscale.\(UUID().uuidString)"
+    /// Whether the run can keep going for a long time in the background.
+    private(set) var runsInBackground = false
+
+    private let box = TaskBox()
+    private let title: String
+    private var fallbackID: UIBackgroundTaskIdentifier = .invalid
+    private var activity: Activity<UpscaleActivityAttributes>?
+    private var lastPushed: (state: State, date: Date)?
+    private var finished = false
+
+    /// - Parameter onExpire: Called when the person cancels from the system Live Activity or the task expires.
+    init(modelTitle: String, sizeDescription: String, onExpire: @escaping @Sendable () -> Void) {
+        title = "超分 · \(modelTitle)"
+        let initial = State(stage: .preparing, completed: 0, total: 1, estimatedEnd: nil)
+
+        if ActivityAuthorizationInfo().areActivitiesEnabled {
+            activity = try? Activity.request(
+                attributes: UpscaleActivityAttributes(modelTitle: modelTitle, sizeDescription: sizeDescription),
+                content: ActivityContent(state: initial, staleDate: nil),
+                pushType: nil)
+        }
+
+        runsInBackground = submitContinuedTask(subtitle: initial.stageText, onExpire: onExpire)
+        if !runsInBackground {
+            fallbackID = UIApplication.shared.beginBackgroundTask(withName: "upscale") { [weak self] in
+                MainActor.assumeIsolated { self?.endFallback() }
+            }
+        }
+    }
+
+    func update(stage: State.Stage, completed: Int, total: Int, remaining: TimeInterval?) {
+        guard !finished else { return }
+        let state = State(
+            stage: stage, completed: completed, total: max(total, 1),
+            estimatedEnd: remaining.map { Date().addingTimeInterval($0) })
+        box.update(title: title, subtitle: state.stageText, completed: Int64(state.completed), total: Int64(state.total))
+        pushActivity(state)
+    }
+
+    func finish(success: Bool) {
+        guard !finished else { return }
+        finished = true
+        box.finish(success: success)
+        endFallback()
+        if let activity {
+            let state = State(stage: success ? .finished : .failed, completed: 1, total: 1, estimatedEnd: nil)
+            let policy: ActivityUIDismissalPolicy = success ? .after(Date().addingTimeInterval(8)) : .immediate
+            Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: policy) }
+            self.activity = nil
+        }
+    }
+
+    // MARK: Private
+
+    private func submitContinuedTask(subtitle: String, onExpire: @escaping @Sendable () -> Void) -> Bool {
+        // Use the wildcard prefix declared in Info.plist rather than the runtime bundle ID:
+        // sideloading tools often rewrite the bundle ID, which would no longer match the permitted list.
+        let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+        guard let wildcard = permitted.first(where: { $0.hasSuffix(".*") }) else { return false }
+        let identifier = String(wildcard.dropLast()) + UUID().uuidString
+
         let box = box
         box.update(title: title, subtitle: subtitle, completed: 0, total: 1)
-
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
             guard let task = task as? BGContinuedProcessingTask else {
                 task.setTaskCompleted(success: false)
@@ -40,31 +98,36 @@ final class ProcessingSession {
             task.expirationHandler = onExpire
             box.attach(task)
         }
+        guard registered else { return false }
 
-        var submitted = false
-        if registered {
-            let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: title, subtitle: subtitle)
-            request.strategy = .fail
-            do {
-                try BGTaskScheduler.shared.submit(request)
-                submitted = true
-            } catch {
-                submitted = false
-            }
-        }
-        if !submitted {
-            fallbackID = UIApplication.shared.beginBackgroundTask(withName: "upscale") { [weak self] in
-                MainActor.assumeIsolated { self?.finish(success: false) }
-            }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: title, subtitle: subtitle)
+        request.strategy = .fail
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            return true
+        } catch {
+            return false
         }
     }
 
-    func update(title: String, subtitle: String, completed: Int, total: Int) {
-        box.update(title: title, subtitle: subtitle, completed: Int64(completed), total: Int64(max(total, 1)))
+    private func pushActivity(_ state: State) {
+        guard let activity else { return }
+        // The system is showing its own progress Live Activity for the continued task.
+        if box.isAttached {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            self.activity = nil
+            return
+        }
+        // Keep updates modest: on stage changes, on each new percent, or every few seconds.
+        if let lastPushed, lastPushed.state.stage == state.stage {
+            let percentChanged = Int(state.fraction * 100) != Int(lastPushed.state.fraction * 100)
+            guard percentChanged || Date().timeIntervalSince(lastPushed.date) > 5 else { return }
+        }
+        lastPushed = (state, Date())
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
     }
 
-    func finish(success: Bool) {
-        box.finish(success: success)
+    private func endFallback() {
         if fallbackID != .invalid {
             UIApplication.shared.endBackgroundTask(fallbackID)
             fallbackID = .invalid
@@ -81,6 +144,12 @@ private final class TaskBox: @unchecked Sendable {
     private var subtitle = ""
     private var completed: Int64 = 0
     private var total: Int64 = 1
+
+    var isAttached: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return task != nil
+    }
 
     func attach(_ task: BGContinuedProcessingTask) {
         lock.lock()

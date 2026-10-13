@@ -45,6 +45,8 @@ final class UpscaleViewModel {
     private var prepareTask: Task<Void, Never>?
     private var tilesStartedAt: Date?
     private var session: ProcessingSession?
+    /// Whether the current run may keep going for long in the background (BGContinuedProcessingTask).
+    private(set) var runsInBackground = false
 
     var errorMessage: String?
     var toast: String?
@@ -230,10 +232,11 @@ final class UpscaleViewModel {
         let began = Date()
 
         let session = ProcessingSession(
-            title: "正在超分 · \(model.title)",
-            subtitle: "正在准备模型…",
+            modelTitle: model.title,
+            sizeDescription: [sourceSizeText, targetSizeText].compactMap { $0 }.joined(separator: " → "),
             onExpire: { [self] in Task { @MainActor in self.cancel() } })
         self.session = session
+        runsInBackground = session.runsInBackground
 
         task = Task {
             let application = UIApplication.shared
@@ -259,7 +262,7 @@ final class UpscaleViewModel {
                 try Task.checkCancellation()
                 modelState = .ready(loadTime: nil)
                 phase = .encoding
-                session.update(title: "正在超分 · \(options.model.title)", subtitle: "正在生成图片…", completed: 1, total: 1)
+                session.update(stage: .saving, completed: 1, total: 1, remaining: nil)
 
                 let rendered = try await Task.detached(priority: .userInitiated) {
                     let preview = ImageCodec.downsample(output.image, maxPixel: 4096)
@@ -358,11 +361,7 @@ final class UpscaleViewModel {
                 remaining = perTile * Double(total - completed)
             }
             phase = .processing(completed: completed, total: total)
-            var subtitle = "分块 \(completed)/\(total)"
-            if let remaining {
-                subtitle += " · 剩余约 \(Self.format(remaining))"
-            }
-            session?.update(title: "正在超分 · \(model.title)", subtitle: subtitle, completed: completed, total: total)
+            session?.update(stage: .upscaling, completed: completed, total: total, remaining: remaining)
         }
     }
 

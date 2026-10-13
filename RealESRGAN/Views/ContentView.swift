@@ -66,18 +66,20 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
+        // A PhotosPicker nested in a Menu often fails to present, so it is its own button.
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                Label("从“照片”中选取", systemImage: "photo.badge.plus")
+            }
+            .disabled(viewModel.isBusy)
             Menu {
-                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                    Label("从“照片”中选取", systemImage: "photo.on.rectangle")
-                }
                 Button("从“文件”中选取", systemImage: "folder") { showsFileImporter = true }
                 if viewModel.hasSource {
                     Divider()
                     Button("移除图片", systemImage: "trash", role: .destructive) { viewModel.clear() }
                 }
             } label: {
-                Label("添加图片", systemImage: "plus")
+                Label("更多", systemImage: "ellipsis")
             }
             .disabled(viewModel.isBusy)
         }
@@ -121,6 +123,12 @@ private struct ImageSection: View {
                     }
                 }
                 .listRowInsets(EdgeInsets())
+
+                if !viewModel.isBusy {
+                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                        Label("选择其他照片", systemImage: "photo.badge.plus")
+                    }
+                }
 
                 if viewModel.hasResult {
                     Picker("显示", selection: $showsOriginal) {
@@ -237,6 +245,13 @@ private struct StatusSection: View {
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    Label(
+                        viewModel.runsInBackground
+                            ? "可以切到后台，进度会显示在灵动岛和锁定屏幕上。"
+                            : "进度会显示在灵动岛上；系统未允许长时间后台运行，切到后台约 30 秒后可能暂停。",
+                        systemImage: viewModel.runsInBackground ? "checkmark.circle" : "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 .monospacedDigit()
                 .padding(.vertical, 4)
