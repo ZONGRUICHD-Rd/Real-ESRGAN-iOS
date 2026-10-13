@@ -46,7 +46,10 @@ final class ProcessingSession {
     private var finished = false
 
     /// - Parameter onExpire: Called when the person cancels from the system Live Activity or the task expires.
-    init(modelTitle: String, sizeDescription: String, onExpire: @escaping @Sendable () -> Void) {
+    init(
+        modelTitle: String, sizeDescription: String, showsLiveActivity: Bool,
+        onExpire: @escaping @Sendable () -> Void
+    ) {
         title = "超分 · \(modelTitle)"
         let initial = State(stage: .preparing, completed: 0, total: 1, estimatedEnd: nil)
         let extensionURL = Bundle.main.builtInPlugInsURL?.appendingPathComponent("RealESRGANWidgets.appex")
@@ -55,7 +58,10 @@ final class ProcessingSession {
             extensionInstalled: extensionURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false,
             backgroundTask: "", backgroundOK: false)
 
-        if ActivityAuthorizationInfo().areActivitiesEnabled {
+        if !showsLiveActivity {
+            diagnostics.liveActivity = "已在 App 中关闭"
+            diagnostics.liveActivityOK = true
+        } else if ActivityAuthorizationInfo().areActivitiesEnabled {
             do {
                 activity = try Activity.request(
                     attributes: UpscaleActivityAttributes(modelTitle: modelTitle, sizeDescription: sizeDescription),

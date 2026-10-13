@@ -401,6 +401,17 @@ private struct OptionsSections: View {
         .disabled(viewModel.isBusy)
 
         Section {
+            Toggle(isOn: $viewModel.showsLiveActivity) {
+                Label("在灵动岛显示进度", systemImage: "capsule.inset.filled")
+            }
+        } header: {
+            Text("灵动岛")
+        } footer: {
+            Text("如果灵动岛里只有一块空白，说明重新签名时 Widget 扩展没有被正确签名，可以关闭此项。")
+        }
+        .disabled(viewModel.isBusy)
+
+        Section {
             Picker("处理器", selection: $viewModel.compute) {
                 ForEach(ComputeChoice.allCases) { choice in
                     Label {

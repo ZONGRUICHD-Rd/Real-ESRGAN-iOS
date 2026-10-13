@@ -77,6 +77,10 @@ final class UpscaleViewModel {
             reencodeResult()
         }
     }
+    /// Show our own Live Activity (Dynamic Island / Lock Screen) while upscaling.
+    var showsLiveActivity: Bool {
+        didSet { UserDefaults.standard.set(showsLiveActivity, forKey: "showsLiveActivity") }
+    }
     /// Include GPS location when copying metadata.
     var keepLocation: Bool {
         didSet {
@@ -96,6 +100,7 @@ final class UpscaleViewModel {
         outputFormat = OutputFormat(rawValue: defaults.string(forKey: "format") ?? "") ?? .png
         compute = ComputeChoice(rawValue: defaults.string(forKey: "compute") ?? "") ?? .all
         keepMetadata = defaults.object(forKey: "keepMetadata") as? Bool ?? true
+        showsLiveActivity = defaults.object(forKey: "showsLiveActivity") as? Bool ?? true
         keepLocation = defaults.object(forKey: "keepLocation") as? Bool ?? true
     }
 
@@ -236,6 +241,7 @@ final class UpscaleViewModel {
         let session = ProcessingSession(
             modelTitle: model.title,
             sizeDescription: [sourceSizeText, targetSizeText].compactMap { $0 }.joined(separator: " → "),
+            showsLiveActivity: showsLiveActivity,
             onExpire: { [self] in Task { @MainActor in self.cancel() } })
         self.session = session
         runsInBackground = session.runsInBackground
