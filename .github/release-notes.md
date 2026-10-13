@@ -5,7 +5,7 @@
 - **系统要求**：iOS 26 或更新版本（面向 iPhone 18 Pro / iOS 27），由 GitHub Actions 中的 Xcode 26 构建
 - **界面**：按照 Apple 自带 App 的分组列表排版，iOS 26 的 Liquid Glass 效果由系统自动套用；超分完成后可全屏对比原图和结果
 - **处理器**：自动、CPU、GPU、神经网络引擎（NPU）四选一；模型会提前在后台加载，界面上能看到加载状态
-- **灵动岛**：超分进度、剩余时间和取消按钮会以实时活动显示在灵动岛和锁定屏幕上（iOS 26 BGContinuedProcessingTask），切到后台后处理也会继续
+- **灵动岛**：超分时，百分比、分块进度和倒计时会以实时活动显示在灵动岛和锁定屏幕上。如果系统允许继续后台处理（iOS 26 BGContinuedProcessingTask），切到后台后也会接着处理
 - **模型**：RealESRGAN_x4plus、RealESRGAN_x4plus_anime_6B、realesr-general-x4v3（5 档降噪）、RealESRGAN_x2plus
 - **EXIF**：可选保留原图的拍摄信息（相机、镜头、参数、拍摄时间），位置信息可单独开关；更改后会直接重新导出，不必重新超分
 - **功能**：分块推理、1–4× 输出倍率、保留透明通道、存储到“照片”或分享，可输出 PNG、JPEG 或 HEIC
