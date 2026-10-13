@@ -36,7 +36,10 @@ final class UpscaleViewModel {
     private(set) var elapsed: TimeInterval?
     private(set) var remaining: TimeInterval?
     private(set) var completedCount = 0
+    private(set) var sourceMetadata: ImageMetadata?
     private var resultData: Data?
+    private var resultImage: CGImage?
+    private var resultBaseName = "image"
     private var sourceName = "image"
     private var task: Task<Void, Never>?
     private var prepareTask: Task<Void, Never>?
@@ -58,7 +61,24 @@ final class UpscaleViewModel {
         didSet { settingChanged(denoise, "denoise", reloadsModel: true) }
     }
     var outputFormat: OutputFormat {
-        didSet { UserDefaults.standard.set(outputFormat.rawValue, forKey: "format") }
+        didSet {
+            UserDefaults.standard.set(outputFormat.rawValue, forKey: "format")
+            reencodeResult()
+        }
+    }
+    /// Copy the original photo's EXIF/TIFF/IPTC metadata into the upscaled file.
+    var keepMetadata: Bool {
+        didSet {
+            UserDefaults.standard.set(keepMetadata, forKey: "keepMetadata")
+            reencodeResult()
+        }
+    }
+    /// Include GPS location when copying metadata.
+    var keepLocation: Bool {
+        didSet {
+            UserDefaults.standard.set(keepLocation, forKey: "keepLocation")
+            if keepMetadata { reencodeResult() }
+        }
     }
     var compute: ComputeChoice {
         didSet { settingChanged(compute.rawValue, "compute", reloadsModel: true) }
@@ -71,6 +91,8 @@ final class UpscaleViewModel {
         denoise = defaults.object(forKey: "denoise") as? Double ?? 0.5
         outputFormat = OutputFormat(rawValue: defaults.string(forKey: "format") ?? "") ?? .png
         compute = ComputeChoice(rawValue: defaults.string(forKey: "compute") ?? "") ?? .all
+        keepMetadata = defaults.object(forKey: "keepMetadata") as? Bool ?? true
+        keepLocation = defaults.object(forKey: "keepLocation") as? Bool ?? true
     }
 
     // MARK: Derived
@@ -121,8 +143,8 @@ final class UpscaleViewModel {
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 throw ImageCodec.CodecError.unreadable
             }
-            let image = try await Task.detached(priority: .userInitiated) { try ImageCodec.decode(data: data) }.value
-            setSource(image, name: "photo")
+            let decoded = try await Task.detached(priority: .userInitiated) { try ImageCodec.decode(data: data) }.value
+            setSource(decoded.image, metadata: decoded.metadata, name: "photo")
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -132,16 +154,17 @@ final class UpscaleViewModel {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let image = try await Task.detached(priority: .userInitiated) { try ImageCodec.decode(url: url) }.value
-            setSource(image, name: url.deletingPathExtension().lastPathComponent)
+            let decoded = try await Task.detached(priority: .userInitiated) { try ImageCodec.decode(url: url) }.value
+            setSource(decoded.image, metadata: decoded.metadata, name: url.deletingPathExtension().lastPathComponent)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func setSource(_ image: CGImage, name: String) {
+    private func setSource(_ image: CGImage, metadata: ImageMetadata, name: String) {
         cancel()
         source = image
+        sourceMetadata = metadata.isEmpty ? nil : metadata
         sourceName = name
         sourcePreview = UIImage(cgImage: ImageCodec.downsample(image, maxPixel: 2048))
         clearResult()
@@ -153,6 +176,7 @@ final class UpscaleViewModel {
         cancel()
         source = nil
         sourcePreview = nil
+        sourceMetadata = nil
         clearResult()
         phase = .empty
     }
@@ -200,6 +224,8 @@ final class UpscaleViewModel {
         let options = UpscaleOptions(
             model: model, denoise: denoise, outscale: outscale, computeUnits: compute.units)
         let format = outputFormat
+        let metadata = keepMetadata ? sourceMetadata : nil
+        let includeLocation = keepLocation
         let baseName = "\(sourceName)_\(model.rawValue)_x\(outscale.formatted(.number.precision(.fractionLength(0...2))))"
         let began = Date()
 
@@ -237,19 +263,17 @@ final class UpscaleViewModel {
 
                 let rendered = try await Task.detached(priority: .userInitiated) {
                     let preview = ImageCodec.downsample(output.image, maxPixel: 4096)
-                    let encoded = try ImageCodec.encode(output.image, as: format)
-                    let url = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(baseName)
-                        .appendingPathExtension(encoded.format.fileExtension)
-                    try encoded.data.write(to: url, options: .atomic)
-                    return (preview: UIImage(cgImage: preview), data: encoded.data, url: url)
+                    let file = try Self.writeFile(
+                        output.image, format: format, metadata: metadata,
+                        includeLocation: includeLocation, baseName: baseName)
+                    return (preview: UIImage(cgImage: preview), file: file)
                 }.value
                 try Task.checkCancellation()
 
+                resultImage = output.image
+                resultBaseName = baseName
                 resultPreview = rendered.preview
-                resultData = rendered.data
-                resultByteCount = rendered.data.count
-                resultFileURL = rendered.url
+                setResultFile(rendered.file)
                 resultSize = CGSize(width: output.image.width, height: output.image.height)
                 elapsed = Date().timeIntervalSince(began)
                 completedCount += 1
@@ -262,6 +286,55 @@ final class UpscaleViewModel {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Re-encodes the finished result after the format or metadata options change,
+    /// without running the model again.
+    private func reencodeResult() {
+        guard phase == .done, let image = resultImage else { return }
+        let format = outputFormat
+        let metadata = keepMetadata ? sourceMetadata : nil
+        let includeLocation = keepLocation
+        let baseName = resultBaseName
+        let previousURL = resultFileURL
+        phase = .encoding
+        task = Task {
+            do {
+                let file = try await Task.detached(priority: .userInitiated) {
+                    try Self.writeFile(
+                        image, format: format, metadata: metadata, includeLocation: includeLocation, baseName: baseName)
+                }.value
+                try Task.checkCancellation()
+                if let previousURL, previousURL != file.url {
+                    try? FileManager.default.removeItem(at: previousURL)
+                }
+                setResultFile(file)
+                phase = .done
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
+                phase = .done
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func setResultFile(_ file: (data: Data, url: URL)) {
+        resultData = file.data
+        resultByteCount = file.data.count
+        resultFileURL = file.url
+    }
+
+    nonisolated private static func writeFile(
+        _ image: CGImage, format: OutputFormat, metadata: ImageMetadata?, includeLocation: Bool, baseName: String
+    ) throws -> (data: Data, url: URL) {
+        let properties = metadata?.forOutput(
+            width: image.width, height: image.height, includeLocation: includeLocation)
+        let encoded = try ImageCodec.encode(image, as: format, metadata: properties)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(baseName)
+            .appendingPathExtension(encoded.format.fileExtension)
+        try encoded.data.write(to: url, options: .atomic)
+        return (encoded.data, url)
     }
 
     func cancel() {
@@ -301,6 +374,7 @@ final class UpscaleViewModel {
     private func clearResult() {
         if let resultFileURL { try? FileManager.default.removeItem(at: resultFileURL) }
         resultPreview = nil
+        resultImage = nil
         resultData = nil
         resultByteCount = nil
         resultFileURL = nil

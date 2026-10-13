@@ -319,6 +319,32 @@ private struct OptionsSections: View {
         .disabled(viewModel.isBusy)
 
         Section {
+            Toggle(isOn: $viewModel.keepMetadata) {
+                Label("保留原图 EXIF", systemImage: "info.circle")
+            }
+            if viewModel.keepMetadata {
+                Toggle(isOn: $viewModel.keepLocation) {
+                    Label("包含位置信息", systemImage: "location")
+                }
+            }
+            if let metadata = viewModel.sourceMetadata {
+                if let camera = metadata.camera {
+                    LabeledContent("相机", value: camera)
+                }
+                if let date = metadata.captureDate {
+                    LabeledContent("拍摄时间", value: date)
+                        .monospacedDigit()
+                }
+                LabeledContent("位置", value: metadata.hasLocation ? "有" : "无")
+            }
+        } header: {
+            Text("元数据")
+        } footer: {
+            Text(metadataFooter)
+        }
+        .disabled(viewModel.isBusy)
+
+        Section {
             Picker("处理器", selection: $viewModel.compute) {
                 ForEach(ComputeChoice.allCases) { choice in
                     Label {
@@ -359,6 +385,17 @@ private struct OptionsSections: View {
         } footer: {
             Text("模型与算法来自 Real-ESRGAN（BSD-3-Clause），所有处理都在本机完成，不会上传图片。")
         }
+    }
+
+    private var metadataFooter: String {
+        if viewModel.hasSource && viewModel.sourceMetadata == nil {
+            return "这张图片没有 EXIF 信息。"
+        }
+        if !viewModel.keepMetadata {
+            return "关闭后，超分结果不含任何拍摄信息。"
+        }
+        return "相机、镜头、拍摄参数和拍摄时间会写入超分结果，存入“照片”后会按原拍摄时间排列。"
+            + (viewModel.keepLocation ? "分享前请留意，图片中含有拍摄地点。" : "")
     }
 
     @ViewBuilder
