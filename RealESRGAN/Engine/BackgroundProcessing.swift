@@ -17,11 +17,18 @@ final class AppActivity: @unchecked Sendable {
     }
 }
 
+/// What happened when a run tried to show its progress outside the app, for the diagnostics section.
+struct BackgroundDiagnostics: Equatable {
+    var liveActivity: String
+    var liveActivityOK: Bool
+    var extensionInstalled: Bool
+    var backgroundTask: String
+    var backgroundOK: Bool
+}
+
 /// Everything that keeps one upscale run visible and alive outside the app:
 /// - our own Live Activity (Dynamic Island + Lock Screen) with progress and a countdown;
 /// - an iOS 26 `BGContinuedProcessingTask`, so the work keeps running after the app is backgrounded.
-///   When the system accepts it, it shows its own progress Live Activity, so ours is ended to avoid
-///   showing two.
 /// - a short background-task assertion as a fallback when the system declines the request.
 @MainActor
 final class ProcessingSession {
@@ -29,6 +36,7 @@ final class ProcessingSession {
 
     /// Whether the run can keep going for a long time in the background.
     private(set) var runsInBackground = false
+    private(set) var diagnostics: BackgroundDiagnostics
 
     private let box = TaskBox()
     private let title: String
@@ -41,15 +49,31 @@ final class ProcessingSession {
     init(modelTitle: String, sizeDescription: String, onExpire: @escaping @Sendable () -> Void) {
         title = "超分 · \(modelTitle)"
         let initial = State(stage: .preparing, completed: 0, total: 1, estimatedEnd: nil)
+        let extensionURL = Bundle.main.builtInPlugInsURL?.appendingPathComponent("RealESRGANWidgets.appex")
+        diagnostics = BackgroundDiagnostics(
+            liveActivity: "", liveActivityOK: false,
+            extensionInstalled: extensionURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false,
+            backgroundTask: "", backgroundOK: false)
 
         if ActivityAuthorizationInfo().areActivitiesEnabled {
-            activity = try? Activity.request(
-                attributes: UpscaleActivityAttributes(modelTitle: modelTitle, sizeDescription: sizeDescription),
-                content: ActivityContent(state: initial, staleDate: nil),
-                pushType: nil)
+            do {
+                activity = try Activity.request(
+                    attributes: UpscaleActivityAttributes(modelTitle: modelTitle, sizeDescription: sizeDescription),
+                    content: ActivityContent(state: initial, staleDate: nil),
+                    pushType: nil)
+                diagnostics.liveActivity = "已创建"
+                diagnostics.liveActivityOK = true
+            } catch {
+                diagnostics.liveActivity = "创建失败：\(error.localizedDescription)"
+            }
+        } else {
+            diagnostics.liveActivity = "已在“设置”中关闭"
         }
 
-        runsInBackground = submitContinuedTask(subtitle: initial.stageText, onExpire: onExpire)
+        let outcome = submitContinuedTask(subtitle: initial.stageText, onExpire: onExpire)
+        runsInBackground = outcome.ok
+        diagnostics.backgroundTask = outcome.message
+        diagnostics.backgroundOK = outcome.ok
         if !runsInBackground {
             fallbackID = UIApplication.shared.beginBackgroundTask(withName: "upscale") { [weak self] in
                 MainActor.assumeIsolated { self?.endFallback() }
@@ -81,11 +105,15 @@ final class ProcessingSession {
 
     // MARK: Private
 
-    private func submitContinuedTask(subtitle: String, onExpire: @escaping @Sendable () -> Void) -> Bool {
+    private func submitContinuedTask(
+        subtitle: String, onExpire: @escaping @Sendable () -> Void
+    ) -> (ok: Bool, message: String) {
         // Use the wildcard prefix declared in Info.plist rather than the runtime bundle ID:
         // sideloading tools often rewrite the bundle ID, which would no longer match the permitted list.
         let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
-        guard let wildcard = permitted.first(where: { $0.hasSuffix(".*") }) else { return false }
+        guard let wildcard = permitted.first(where: { $0.hasSuffix(".*") }) else {
+            return (false, "Info.plist 中没有后台任务标识符")
+        }
         let identifier = String(wildcard.dropLast()) + UUID().uuidString
 
         let box = box
@@ -98,26 +126,31 @@ final class ProcessingSession {
             task.expirationHandler = onExpire
             box.attach(task)
         }
-        guard registered else { return false }
+        guard registered else { return (false, "注册后台任务失败") }
 
         let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: title, subtitle: subtitle)
         request.strategy = .fail
         do {
             try BGTaskScheduler.shared.submit(request)
-            return true
+            return (true, "已提交，等待系统启动")
         } catch {
-            return false
+            let error = error as NSError
+            let reason: String
+            switch error.code {
+            case 1: reason = "系统不允许（可能关闭了“后台 App 刷新”，或开启了低电量模式）"
+            case 2: reason = "待处理的后台任务太多"
+            case 3: reason = "标识符不被允许（签名工具可能修改了 Bundle ID）"
+            default: reason = error.localizedDescription
+            }
+            return (false, "\(reason)［\(error.domain) \(error.code)］")
         }
     }
 
     private func pushActivity(_ state: State) {
-        guard let activity else { return }
-        // The system is showing its own progress Live Activity for the continued task.
-        if box.isAttached {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
-            self.activity = nil
-            return
+        if box.isAttached, !diagnostics.backgroundTask.hasPrefix("系统已开始") {
+            diagnostics.backgroundTask = "系统已开始运行，可切到后台"
         }
+        guard let activity else { return }
         // Keep updates modest: on stage changes, on each new percent, or every few seconds.
         if let lastPushed, lastPushed.state.stage == state.stage {
             let percentChanged = Int(state.fraction * 100) != Int(lastPushed.state.fraction * 100)
@@ -190,3 +223,20 @@ private final class TaskBox: @unchecked Sendable {
         task.updateTitle(title, subtitle: subtitle)
     }
 }
+
+#if DEBUG
+/// Starts a sample Live Activity when launched with `-LiveActivityDemo`, so CI can screenshot the
+/// Dynamic Island in the simulator.
+enum LiveActivityDemo {
+    @MainActor
+    static func startIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-LiveActivityDemo") else { return }
+        let state = UpscaleActivityAttributes.ContentState(
+            stage: .upscaling, completed: 97, total: 252, estimatedEnd: Date().addingTimeInterval(150))
+        _ = try? Activity.request(
+            attributes: UpscaleActivityAttributes(modelTitle: "通用照片 x4", sizeDescription: "4032 × 3024 → 8064 × 6048"),
+            content: ActivityContent(state: state, staleDate: nil),
+            pushType: nil)
+    }
+}
+#endif

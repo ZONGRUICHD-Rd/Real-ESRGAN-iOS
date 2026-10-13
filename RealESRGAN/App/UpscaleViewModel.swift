@@ -47,6 +47,8 @@ final class UpscaleViewModel {
     private var session: ProcessingSession?
     /// Whether the current run may keep going for long in the background (BGContinuedProcessingTask).
     private(set) var runsInBackground = false
+    /// Live Activity / background-task status of the latest run, for the diagnostics section.
+    private(set) var backgroundDiagnostics: BackgroundDiagnostics?
 
     var errorMessage: String?
     var toast: String?
@@ -237,6 +239,7 @@ final class UpscaleViewModel {
             onExpire: { [self] in Task { @MainActor in self.cancel() } })
         self.session = session
         runsInBackground = session.runsInBackground
+        backgroundDiagnostics = session.diagnostics
 
         task = Task {
             let application = UIApplication.shared
@@ -362,6 +365,9 @@ final class UpscaleViewModel {
             }
             phase = .processing(completed: completed, total: total)
             session?.update(stage: .upscaling, completed: completed, total: total, remaining: remaining)
+            if let diagnostics = session?.diagnostics, diagnostics != backgroundDiagnostics {
+                backgroundDiagnostics = diagnostics
+            }
         }
     }
 

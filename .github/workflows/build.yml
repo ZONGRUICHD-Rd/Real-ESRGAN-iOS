@@ -154,3 +154,77 @@ jobs:
           files: |
             build/RealESRGAN-unsigned.ipa
             build/RealESRGAN-unsigned.ipa.sha256
+
+  simulator-preview:
+    name: Simulator screenshots (Dynamic Island)
+    needs: models
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mlpackages
+          path: build/mlpackages
+
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | grep -viE 'beta|release_candidate' | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Compile models and generate project
+        run: |
+          mkdir -p build/Models
+          for package in build/mlpackages/*.mlpackage; do
+            xcrun coremlcompiler compile "$package" build/Models
+          done
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RealESRGAN.xcodeproj \
+            -scheme RealESRGAN \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/SimData \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build/xcodebuild-sim.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build/xcodebuild-sim.log
+
+      - name: Run in simulator and take screenshots
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          found = [(rt, d) for rt, ds in devices.items() if 'iOS-26' in rt for d in ds
+                   if d['name'].startswith('iPhone') and 'Pro' in d['name'] and 'Max' not in d['name']]
+          found.sort(key=lambda t: (t[0], t[1]['name']))
+          print(found[-1][1]['udid'])
+          ")
+          xcrun simctl list devices | grep "$UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP=build/SimData/Build/Products/Debug-iphonesimulator/RealESRGAN.app
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p build/shots
+          xcrun simctl launch "$UDID" com.zongruichd.realesrgan -LiveActivityDemo
+          sleep 10
+          xcrun simctl io "$UDID" screenshot build/shots/1-app.png
+          # Send the app to the background so the Live Activity moves into the Dynamic Island.
+          xcrun simctl launch "$UDID" com.apple.Preferences
+          sleep 6
+          xcrun simctl io "$UDID" screenshot build/shots/2-island.png
+          xcrun simctl spawn "$UDID" log show --last 3m --style compact \
+            --predicate 'process CONTAINS "RealESRGANWidgets" OR (process == "chronod") OR (subsystem == "com.apple.activitykit")' \
+            > build/shots/live-activity.log 2>&1 || true
+          tail -40 build/shots/live-activity.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-screenshots
+          path: build/shots

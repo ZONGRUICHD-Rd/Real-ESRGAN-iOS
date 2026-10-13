@@ -21,6 +21,10 @@ struct ContentView: View {
                     StatusSection(viewModel: viewModel)
                 }
 
+                if let diagnostics = viewModel.backgroundDiagnostics {
+                    DiagnosticsSection(diagnostics: diagnostics)
+                }
+
                 OptionsSections(viewModel: viewModel)
             }
             .navigationTitle("超分辨率")
@@ -50,7 +54,12 @@ struct ContentView: View {
                 pickerItem = nil
             }
         }
-        .task { viewModel.prepareModel() }
+        .task {
+            viewModel.prepareModel()
+            #if DEBUG
+            LiveActivityDemo.startIfRequested()
+            #endif
+        }
         .alert(
             "无法完成操作",
             isPresented: Binding(
@@ -279,6 +288,38 @@ private struct StatusSection: View {
 
     static func format(_ seconds: TimeInterval) -> String {
         UpscaleViewModel.format(seconds)
+    }
+}
+
+// MARK: - Diagnostics
+
+private struct DiagnosticsSection: View {
+    let diagnostics: BackgroundDiagnostics
+
+    var body: some View {
+        Section {
+            row("实时活动", diagnostics.liveActivity, ok: diagnostics.liveActivityOK)
+            row("灵动岛扩展", diagnostics.extensionInstalled ? "已安装" : "缺失（签名工具可能移除了扩展）",
+                ok: diagnostics.extensionInstalled)
+            row("后台继续运行", diagnostics.backgroundTask, ok: diagnostics.backgroundOK)
+        } header: {
+            Text("灵动岛与后台")
+        } footer: {
+            Text("如果三项都正常但灵动岛仍是空白，通常是重新签名时没有正确签名 Widget 扩展。")
+        }
+    }
+
+    private func row(_ title: String, _ value: String, ok: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(ok ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(value)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
